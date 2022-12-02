@@ -2,25 +2,24 @@ package gsemaphore
 
 import "sync"
 
-type Pipeline[T interface{}] func(T) error
+type pipeline[T interface{}] func(T) error
 
-// RunWithSemaphore, receives a function F => error that iterate over itens of type T in parallel with the max amount of
-// go routines defined by parameter, it does receive an error channel that will be feed by errors producer by the
-// provided function.
+// RunWithSemaphore, receive a T list of elements to be process by a given f(T) -> error function in parallel with the
+// specified amount of go routines, all errors returned by the given function will be published into the error channel.
 func RunWithSemaphore[T interface{}](
-	f Pipeline[T],
+	f pipeline[T],
 	itemsToProcess []T,
-	maxAsyncProcess int,
+	maxAsyncPipelinesRunning int,
 	errorsChannel chan error) {
-	go func(f Pipeline[T], c chan error) {
+	go func(f pipeline[T], c chan error) {
 
-		semaphore := make(chan struct{}, maxAsyncProcess)
+		semaphore := make(chan struct{}, maxAsyncPipelinesRunning)
 		semaphoreWG := sync.WaitGroup{}
 
 		for _, item := range itemsToProcess {
 			semaphoreWG.Add(1)
 
-			go func(pipe Pipeline[T], i T, c chan error) {
+			go func(pipe pipeline[T], i T, c chan error) {
 				semaphore <- struct{}{}
 				if err := f(i); err != nil {
 					c <- err
