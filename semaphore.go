@@ -1,12 +1,11 @@
-package main
+package genericsemaphore
 
 import (
 	"sync"
 )
 
 type (
-	Pipeline[T interface{}]          func(T) error
-	SemaphoreFunction[T interface{}] func(Pipeline[T], []T, int, chan error) error
+	Pipeline[T interface{}] func(T) error
 )
 
 // RunWithSemaphore, receives a function F => error that iterate over itens of type T in parallel with the max amount of
