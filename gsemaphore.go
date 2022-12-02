@@ -1,12 +1,8 @@
-package genericsemaphore
+package gsemaphore
 
-import (
-	"sync"
-)
+import "sync"
 
-type (
-	Pipeline[T interface{}] func(T) error
-)
+type Pipeline[T interface{}] func(T) error
 
 // RunWithSemaphore, receives a function F => error that iterate over itens of type T in parallel with the max amount of
 // go routines defined by parameter, it does receive an error channel that will be feed by errors producer by the

@@ -1,11 +1,11 @@
-# generic-semaphore
+# gsemaphore
 
 A small package that allow an easy async processing with goroutines controlled by the [semaphore pattern](https://en.wikipedia.org/wiki/Semaphore_(programming)).
 
 usage
 
 ```go
-import semaphore "github.com/RafaelPereiraSantos/generic-semaphore"
+import semaphore "github.com/RafaelPereiraSantos/gsemaphore"
 
 func main {
     myDataToProcess := []string {
