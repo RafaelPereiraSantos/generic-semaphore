@@ -1,3 +1,3 @@
-module github.com/RafaelPereiraSantos/generic-semaphore
+module github.com/RafaelPereiraSantos/genericsemaphore
 
 go 1.19
