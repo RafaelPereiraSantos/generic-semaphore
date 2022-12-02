@@ -2,6 +2,8 @@
 
 A small package that allow an easy async processing with goroutines controlled by the [semaphore pattern](https://en.wikipedia.org/wiki/Semaphore_(programming)).
 
+The struct `CircuitBreaker` is a state machine to prevent sending requests that are likely to fail.
+
 ## Usage
 --------
 
@@ -27,8 +29,8 @@ func main {
         return nil
     }
 
-    // the max amount of goroutines running, each goroutine will use "myPipelineFunc" to process the itens present into
-    // the "myDataToProcess" list.
+    // the max amount of goroutines running, each goroutine will use "myPipelineFunc" to process
+    // the itens present into the "myDataToProcess" list.
     maxGoRoutines := 99 
 
     // The channel that will receive incomming errors from "myPipelineFunc".
@@ -41,8 +43,9 @@ func main {
 		errChan,
 	)
 
-    // It is necessary to listen to the channel in order to prevent the application to finalize without processing all
-    // data. When the list is entirely processed either successfully or error, the channel will be closed automatically.
+    // It is necessary to listen to the channel in order to prevent the application to finalize
+    // without processing all data. When the list is entirely processed either successfully or
+    // error, the channel will be closed automatically.
     for err := range errorsChan {
 		fmt.Printf("Some Error Ocurred: %v\n", err)
 	}
