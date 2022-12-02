@@ -9,12 +9,14 @@ A small package that allow an easy async processing with goroutines controlled b
 import semaphore "github.com/RafaelPereiraSantos/gsemaphore"
 
 func main {
+    // List of data that must be processed.
     myDataToProcess := []string {
         "a",
         "b",
         ...
-    } // List of data that must be processed.
+    }
 
+    // The funciton that will receive each "myDataToProcess" item.
     myPipelineFunc := func(str string) error {
         err := someService.ProcessString(str)
 
@@ -23,11 +25,14 @@ func main {
         }
 
         return nil
-    } // The funciton that will receive each "myDataToProcess" item.
+    }
 
-    maxGoRoutines := 99 // the max amount goroutines running, each goroutine will use "myPipelineFunc" to process the itens present into the "myDataToProcess" list.
+    // the max amount of goroutines running, each goroutine will use "myPipelineFunc" to process the itens present into
+    // the "myDataToProcess" list.
+    maxGoRoutines := 99 
 
-    errChan := make(chan error) // The channel that will receive incomming errors from "myPipelineFunc".
+    // The channel that will receive incomming errors from "myPipelineFunc".
+    errChan := make(chan error)
 
     semaphore.RunWithSemaphore(
 		myPipelineFunc,
@@ -36,6 +41,8 @@ func main {
 		errChan,
 	)
 
+    // It is necessary to listen to the channel in order to prevent the application to finalize without processing all
+    // data. When the list is entirely processed either successfully or error, the channel will be closed automatically.
     for err := range errorsChan {
 		fmt.Printf("Some Error Ocurred: %v\n", err)
 	}
