@@ -2,8 +2,6 @@
 
 A small package that allow an easy async processing with goroutines controlled by the [semaphore pattern](https://en.wikipedia.org/wiki/Semaphore_(programming)).
 
-The struct `CircuitBreaker` is a state machine to prevent sending requests that are likely to fail.
-
 ## Usage
 
 The usage is pretty straightforward, import the package and follow as the example bellow.
