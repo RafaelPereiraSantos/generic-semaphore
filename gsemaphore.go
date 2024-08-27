@@ -1,13 +1,17 @@
 package gsemaphore
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 type (
 	Semaphore[T any] struct {
-		f                    pipeline[T]
-		itemsToProcess       []T
-		maxParallelPipelines int
-		errorsChannel        chan error
+		f                               pipeline[T]
+		itemsToProcess                  []T
+		startingParallelPipelinesAmount int
+		maxParallelPipelinesAmount      int
+		errorsChannel                   chan error
 	}
 
 	pipeline[T any] func(T) error
@@ -24,8 +28,17 @@ func NewSemaphore[T any](options []opts[T]) *Semaphore[T] {
 	return &sem
 }
 
-func (sem *Semaphore[T]) Run() {
-	semaphore := make(chan struct{}, sem.maxParallelPipelines)
+func (sem *Semaphore[T]) Run(ctx context.Context) {
+	semaphore := make(chan struct{}, sem.maxParallelPipelinesAmount)
+
+	if sem.slowlyIncreaseParallelism() {
+		for i := 0; i < sem.maxParallelPipelinesAmount-sem.startingParallelPipelinesAmount; i++ {
+			semaphore <- struct{}{}
+		}
+
+		go sem.slowlyOpenNewSlotsOnSemahore()
+	}
+
 	semaphoreWG := sync.WaitGroup{}
 
 	for _, item := range sem.itemsToProcess {
@@ -45,6 +58,14 @@ func (sem *Semaphore[T]) Run() {
 	close(sem.errorsChannel)
 }
 
+func (sem *Semaphore[T]) slowlyIncreaseParallelism() bool {
+	return sem.startingParallelPipelinesAmount > 0
+}
+
+func (sem *Semaphore[T]) slowlyOpenNewSlotsOnSemahore(ctx context.Context) {
+
+}
+
 func WithPipeline[T any](f pipeline[T]) func(*Semaphore[T]) *Semaphore[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.f = f
@@ -61,9 +82,17 @@ func WithItensToProcess[T any](itemsToProcess []T) func(*Semaphore[T]) *Semaphor
 	}
 }
 
-func WithMaxParallelPipelines[T any](maxParallelPipelines int) func(*Semaphore[T]) *Semaphore[T] {
+func WithStartingParallelPipelinesAmount[T any](startingParallelPipelinesAmount int) func(*Semaphore[T]) *Semaphore[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.maxParallelPipelines = maxParallelPipelines
+		s.startingParallelPipelinesAmount = startingParallelPipelinesAmount
+
+		return s
+	}
+}
+
+func WithMaxParallelPipelinesAmount[T any](maxParallelPipelinesAmount int) func(*Semaphore[T]) *Semaphore[T] {
+	return func(s *Semaphore[T]) *Semaphore[T] {
+		s.maxParallelPipelinesAmount = maxParallelPipelinesAmount
 
 		return s
 	}
