@@ -2,34 +2,77 @@ package gsemaphore
 
 import "sync"
 
-type pipeline[T interface{}] func(T) error
+type (
+	Semaphore[T any] struct {
+		f                    pipeline[T]
+		itemsToProcess       []T
+		maxParallelPipelines int
+		errorsChannel        chan error
+	}
 
-// RunWithSemaphore, receive a T list of elements to be process by a given f(T) -> error function in parallel with the
-// specified amount of go routines, all errors returned by the given function will be published into the error channel.
-func RunWithSemaphore[T interface{}](
-	f pipeline[T],
-	itemsToProcess []T,
-	maxAsyncPipelinesRunning int,
-	errorsChannel chan error) {
-	go func(f pipeline[T], c chan error) {
+	pipeline[T any] func(T) error
 
-		semaphore := make(chan struct{}, maxAsyncPipelinesRunning)
-		semaphoreWG := sync.WaitGroup{}
+	opts[T any] func(*Semaphore[T]) Semaphore[T]
+)
 
-		for _, item := range itemsToProcess {
-			semaphoreWG.Add(1)
-			semaphore <- struct{}{}
+func NewSemaphore[T any](options []opts[T]) *Semaphore[T] {
+	sem := Semaphore[T]{}
+	for _, opt := range options {
+		sem = opt(&sem)
+	}
 
-			go func(pipe pipeline[T], i T, c chan error) {
-				if err := f(i); err != nil {
-					c <- err
-				}
-				<-semaphore
-				semaphoreWG.Done()
-			}(f, item, c)
-		}
+	return &sem
+}
 
-		semaphoreWG.Wait()
-		close(c)
-	}(f, errorsChannel)
+func (sem *Semaphore[T]) Run() {
+	semaphore := make(chan struct{}, sem.maxParallelPipelines)
+	semaphoreWG := sync.WaitGroup{}
+
+	for _, item := range sem.itemsToProcess {
+		semaphoreWG.Add(1)
+		semaphore <- struct{}{}
+
+		go func(pipe pipeline[T], i T, c chan error) {
+			if err := sem.f(i); err != nil {
+				c <- err
+			}
+			<-semaphore
+			semaphoreWG.Done()
+		}(sem.f, item, sem.errorsChannel)
+	}
+
+	semaphoreWG.Wait()
+	close(sem.errorsChannel)
+}
+
+func WithPipeline[T any](f pipeline[T]) func(*Semaphore[T]) *Semaphore[T] {
+	return func(s *Semaphore[T]) *Semaphore[T] {
+		s.f = f
+
+		return s
+	}
+}
+
+func WithItensToProcess[T any](itemsToProcess []T) func(*Semaphore[T]) *Semaphore[T] {
+	return func(s *Semaphore[T]) *Semaphore[T] {
+		s.itemsToProcess = itemsToProcess
+
+		return s
+	}
+}
+
+func WithMaxParallelPipelines[T any](maxParallelPipelines int) func(*Semaphore[T]) *Semaphore[T] {
+	return func(s *Semaphore[T]) *Semaphore[T] {
+		s.maxParallelPipelines = maxParallelPipelines
+
+		return s
+	}
+}
+
+func WithErrorChannel[T any](errorsChannel chan error) func(*Semaphore[T]) *Semaphore[T] {
+	return func(s *Semaphore[T]) *Semaphore[T] {
+		s.errorsChannel = errorsChannel
+
+		return s
+	}
 }
