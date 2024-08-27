@@ -18,9 +18,9 @@ func RunWithSemaphore[T interface{}](
 
 		for _, item := range itemsToProcess {
 			semaphoreWG.Add(1)
+			semaphore <- struct{}{}
 
 			go func(pipe pipeline[T], i T, c chan error) {
-				semaphore <- struct{}{}
 				if err := f(i); err != nil {
 					c <- err
 				}
