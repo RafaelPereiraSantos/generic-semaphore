@@ -12,14 +12,13 @@ type (
 	Semaphore[T any] struct {
 		f                               pipeline[T]
 		startingParallelPipelinesAmount int
-		timeBetweenParallelismIncrease  time.Duration
-		currentParallelPipelinesAmount  int
-		maxParallelPipelinesAmount      int
 		errorsChannel                   chan error
 
 		semaphore chan struct{}
 
 		workersPool sync.Pool
+
+		parallelismStrategy goroutinesRampUpStrategy[T]
 	}
 
 	worker struct {
@@ -31,6 +30,9 @@ type (
 	OptionFunc[T any] func(*Semaphore[T]) *Semaphore[T]
 
 	WorkerKey string
+
+	goroutinesRampUpStrategy[T any] func(context.Context, *Semaphore[T]) (strategyFollowUp, context.CancelFunc)
+	strategyFollowUp                func()
 )
 
 const (
@@ -63,17 +65,14 @@ func NewSemaphore[T any](options []OptionFunc[T]) *Semaphore[T] {
 // goroutines equal to the startingParallelPipelinesAmount attribute and slowly increase its capacity up to
 // maxParallelPipelinesAmount, incrementing 1 extra goroutine each timeBetweenParallelismIncrease.
 func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T) {
-	sem.semaphore = make(chan struct{}, sem.maxParallelPipelinesAmount)
+	followUp, followUpCancel := sem.parallelismStrategy(ctx, sem)
 
-	if sem.shouldIncreaseAmountOfGoroutinesOverTime() {
-		for i := 0; i < sem.maxParallelPipelinesAmount-sem.startingParallelPipelinesAmount-1; i++ {
-			sem.semaphore <- struct{}{}
-		}
+	if followUp != nil {
+		go followUp()
+	}
 
-		ctxForNewSlots, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		go sem.allowANewGoroutineOverTime(ctxForNewSlots)
+	if followUpCancel != nil {
+		defer followUpCancel()
 	}
 
 	semaphoreWG := sync.WaitGroup{}
@@ -102,31 +101,6 @@ func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T) {
 	close(sem.errorsChannel)
 }
 
-func (sem *Semaphore[T]) shouldIncreaseAmountOfGoroutinesOverTime() bool {
-	return sem.startingParallelPipelinesAmount > 0 && sem.timeBetweenParallelismIncrease > 0
-}
-
-func (sem *Semaphore[T]) allowANewGoroutineOverTime(ctx context.Context) {
-	ticker := time.NewTicker(sem.timeBetweenParallelismIncrease)
-	defer ticker.Stop()
-
-	sem.currentParallelPipelinesAmount = sem.startingParallelPipelinesAmount
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			<-sem.semaphore
-			sem.currentParallelPipelinesAmount++
-
-			if sem.currentParallelPipelinesAmount >= sem.maxParallelPipelinesAmount {
-				return
-			}
-		}
-	}
-}
-
 // UpdateSettings allows that a already instantiated semaphore to be updated, it accepts any function with the signature
 // of OptionFunc[T].
 func (sem *Semaphore[T]) UpdateSettings(options []OptionFunc[T]) {
@@ -145,39 +119,6 @@ func WithPipeline[T any](f pipeline[T]) OptionFunc[T] {
 	}
 }
 
-// WithStartingParallelPipelinesAmount allows the change of the semaphore attribute startingParallelPipelinesAmount
-// which dictates the amount of initial goroutines running simultaneously. The value must be greater than zero and
-// equal or less than maxParallelPipelinesAmount.
-func WithStartingParallelPipelinesAmount[T any](start int) OptionFunc[T] {
-	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.startingParallelPipelinesAmount = start
-
-		if s.startingParallelPipelinesAmount > s.maxParallelPipelinesAmount {
-			s.startingParallelPipelinesAmount = s.maxParallelPipelinesAmount
-		}
-
-		if s.startingParallelPipelinesAmount <= 0 {
-			s.startingParallelPipelinesAmount = defaultParallelismAmount
-		}
-
-		return s
-	}
-}
-
-// WithMaxParallelPipelinesAmount allows the change of the semaphore attribute maxParallelPipelinesAmount which
-// controls the max amount of goroutine runnining simultaneously. The value must be greater than 0.
-func WithMaxParallelPipelinesAmount[T any](max int) OptionFunc[T] {
-	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.maxParallelPipelinesAmount = max
-
-		if s.maxParallelPipelinesAmount <= 0 {
-			s.maxParallelPipelinesAmount = defaultParallelismAmount
-		}
-
-		return s
-	}
-}
-
 // WithErrorChannel is a function that allows that a channel be passed to the semaphore allowing that the semaphore
 // send errors that happened with the pipeline.
 func WithErrorChannel[T any](errorsChannel chan error) OptionFunc[T] {
@@ -188,16 +129,70 @@ func WithErrorChannel[T any](errorsChannel chan error) OptionFunc[T] {
 	}
 }
 
-// WithTimeBetweenParallelismIncrease is a optional function that allows the implementation of a duration time
-// between opening of each new slot for a goroutine to run.
-func WithTimeBetweenParallelismIncrease[T any](d time.Duration) OptionFunc[T] {
+// WithParallelismStrategyOf allows that the number of goroutines running at same time be defined following any strategy
+// from maxing out from the very beginning with all goroutines running or a slow increase over time.
+func WithParallelismStrategyOf[T any](str goroutinesRampUpStrategy[T]) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.timeBetweenParallelismIncrease = d
-
-		if s.timeBetweenParallelismIncrease <= 0 {
-			s.timeBetweenParallelismIncrease = 0
+		if str == nil {
+			return s
 		}
 
+		s.parallelismStrategy = str
+
 		return s
+	}
+}
+
+// BuildLinearParallelismIncreaseStrategy creates a strategy function that follows the linear progression of goroutines
+// increase.
+func BuildLinearParallelismIncreaseStrategy[T any](
+	startingParallelPipelinesAmount int,
+	maxParallelPipelinesAmount int,
+	timeBetweenParallelismIncrease time.Duration,
+) goroutinesRampUpStrategy[T] {
+	return func(
+		ctx context.Context,
+		sem *Semaphore[T],
+	) (strategyFollowUp, context.CancelFunc) {
+		sem.semaphore = make(chan struct{}, maxParallelPipelinesAmount)
+
+		for i := 0; i < maxParallelPipelinesAmount-sem.startingParallelPipelinesAmount-1; i++ {
+			sem.semaphore <- struct{}{}
+		}
+
+		ctxForNewSlots, cancel := context.WithCancel(ctx)
+
+		linearSpotsIncreaser := func() {
+			ticker := time.NewTicker(timeBetweenParallelismIncrease)
+			defer ticker.Stop()
+
+			currentParallelPipelinesAmount := sem.startingParallelPipelinesAmount
+
+			for {
+				select {
+				case <-ctxForNewSlots.Done():
+					return
+				case <-ticker.C:
+					<-sem.semaphore
+					currentParallelPipelinesAmount++
+
+					if currentParallelPipelinesAmount >= maxParallelPipelinesAmount {
+						return
+					}
+				}
+			}
+		}
+
+		return linearSpotsIncreaser, cancel
+	}
+}
+
+// BuildFullCapacityFromStartStrategy creates a strategy function that enables all goroutines to run from the very
+// beginning.
+func BuildFullCapacityFromStartStrategy[T any](maxParallelPipelinesAmount int) goroutinesRampUpStrategy[T] {
+	return func(_ context.Context, sem *Semaphore[T]) (strategyFollowUp, context.CancelFunc) {
+		sem.semaphore = make(chan struct{}, maxParallelPipelinesAmount)
+
+		return nil, nil
 	}
 }

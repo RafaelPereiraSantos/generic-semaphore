@@ -9,44 +9,52 @@ The usage is pretty straightforward, import the package and follow as the exampl
 ```go
 import semaphore "github.com/RafaelPereiraSantos/gsemaphore"
 
-func main {
-    // List of data that must be processed.
-    myDataToProcess := []string {
-        "a",
-        "b",
-        ...
-    }
+func main() {
+  // Creates a error channel that will be used by the semaphore to return any errors with the pipeline.
+	errorChannel := make(chan error)
 
-    // The funciton that will receive each "myDataToProcess" item.
-    myPipelineFunc := func(str string) error {
-        err := someService.ProcessString(str)
+  // Creates the function that will process each item from a list of itens to be processed individually per goroutine.
+	pipeline := func(u string, ctx context.Context) error {
+		workerID := ctx.Value(gsemaphore.WorkerIDcontextKey)
 
-        if err != nil {
-            return err
-        }
+		fmt.Printf("worker: [%s] starting to process user: [%s]\n", workerID, u)
+		veryLongProcesingJob := rand.Intn(5)
+		time.Sleep(time.Duration(veryLongProcesingJob) * time.Second)
 
-        return nil
-    }
+		fmt.Printf("worker: [%s] finished processing user: [%s] in %ds\n", workerID, u, veryLongProcesingJob)
 
-    // the max amount of goroutines running, each goroutine will use "myPipelineFunc" to process
-    // the itens present into the "myDataToProcess" list.
-    maxGoRoutines := 99 
+		return nil
+	}
 
-    // The channel that will receive incomming errors from "myPipelineFunc".
-    errChan := make(chan error)
+	userNames := []string{
+		"John",
+		"Clara",
+		"Fabio",
+		"Yasmin",
+		"Henrique",
+		"Claudia",
+	}
 
-    semaphore.RunWithSemaphore(
-		myPipelineFunc,
-		myDataToProcess,
-		maxGoRoutines,
-		errChan,
-	)
+  // Creates the async pipeline passing all the necessary configurations. Note that if no configuration is given it will
+  // the follow its default values (refers to the internal code to see them).
+	sem := gsemaphore.NewSemaphore([]gsemaphore.OptionFunc[string]{
+		gsemaphore.WithPipeline(pipeline),
+    // Defines which parallelism strategy the pipeline will follow, in this case the pipeline will start from 1 
+    // goroutine and slowly increase up to 10 with a pace of a increase of 1 per second.
+		gsemaphore.WithParallelismStrategyOf(
+			gsemaphore.BuildLinearParallelismIncreaseStrategy[string](1, 10, time.Second),
+		),
+		gsemaphore.WithErrorChannel[string](errorChannel),
+	})
 
-    // It is necessary to listen to the channel in order to prevent the application to finalize
-    // without processing all data. When the list is entirely processed either successfully or
-    // error, the channel will be closed automatically.
-    for err := range errorsChan {
-		fmt.Printf("Some Error Ocurred: %v\n", err)
+  // Runs the semaphore passing the list of itens to be processed. The context that is passed could be used to end
+  // the pipeline by callind Done().
+	go sem.Run(context.Background(), userNames)
+
+  // Keeps listening to all errors returned by the channel until it is closed.
+	for err := range errorChannel {
+		fmt.Println(err)
 	}
 }
+
 ```

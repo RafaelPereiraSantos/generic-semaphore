@@ -35,9 +35,9 @@ func main() {
 
 	sem := gsemaphore.NewSemaphore([]gsemaphore.OptionFunc[string]{
 		gsemaphore.WithPipeline(pipeline),
-		gsemaphore.WithStartingParallelPipelinesAmount[string](1),
-		gsemaphore.WithTimeBetweenParallelismIncrease[string](1 * time.Second),
-		gsemaphore.WithMaxParallelPipelinesAmount[string](10),
+		gsemaphore.WithParallelismStrategyOf(
+			gsemaphore.BuildLinearParallelismIncreaseStrategy[string](1, 10, time.Second),
+		),
 		gsemaphore.WithErrorChannel[string](errorChannel),
 	})
 
