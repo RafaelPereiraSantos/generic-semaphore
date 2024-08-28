@@ -48,7 +48,8 @@ func main() {
 	})
 
   // Runs the semaphore passing the list of itens to be processed. The context that is passed could be used to end
-  // the pipeline by callind Done().
+  // all pipelines by calling Done(), note that you must implement a mechanism inside the function to handle the done
+  // signal and finish the job.
 	go sem.Run(context.Background(), userNames)
 
   // Keeps listening to all errors returned by the channel until it is closed.
