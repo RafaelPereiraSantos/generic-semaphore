@@ -29,7 +29,7 @@ type (
 
 	pipeline[T any] func(T, context.Context) error
 
-	opts[T any] func(*Semaphore[T]) Semaphore[T]
+	Option[T any] func(*Semaphore[T]) *Semaphore[T]
 
 	WorkerKey string
 )
@@ -40,11 +40,11 @@ const (
 )
 
 // NewSemaphore returns a new Semaphore properly configured with the given options.
-func NewSemaphore[T any](options []opts[T]) *Semaphore[T] {
-	sem := Semaphore[T]{
+func NewSemaphore[T any](options []Option[T]) *Semaphore[T] {
+	sem := &Semaphore[T]{
 		workersPool: sync.Pool{
 			New: func() any {
-				return worker{
+				return &worker{
 					id: uuid.NewString(),
 				}
 			},
@@ -52,26 +52,29 @@ func NewSemaphore[T any](options []opts[T]) *Semaphore[T] {
 	}
 
 	for _, opt := range options {
-		sem = opt(&sem)
+		sem = opt(sem)
 	}
 
-	return &sem
+	return sem
 }
 
 // Run initialize the async processing of each item with the given pipeline function. It must receive a context which
 // will be used to controll dead lines.
+// If the startingParallelPipelinesAmount was greater than zero, the async processing will start with the amount of
+// goroutines equal to the startingParallelPipelinesAmount attribute and slowly increase its capacity up to
+// maxParallelPipelinesAmount, incrementing 1 extra goroutine each timeBetweenParallelismIncrease.
 func (sem *Semaphore[T]) Run(ctx context.Context) {
 	sem.semaphore = make(chan struct{}, sem.maxParallelPipelinesAmount)
 
-	if sem.slowlyIncreaseParallelism() {
-		for i := 0; i < sem.maxParallelPipelinesAmount-sem.startingParallelPipelinesAmount; i++ {
+	if sem.shouldIncreaseAmountOfGoroutinesOverTime() {
+		for i := 0; i < sem.maxParallelPipelinesAmount-sem.startingParallelPipelinesAmount-1; i++ {
 			sem.semaphore <- struct{}{}
 		}
 
 		ctxForNewSlots, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		go sem.slowlyOpenNewSlotsOnSemahore(ctxForNewSlots)
+		go sem.allowANewGoroutineOverTime(ctxForNewSlots)
 	}
 
 	semaphoreWG := sync.WaitGroup{}
@@ -79,16 +82,20 @@ func (sem *Semaphore[T]) Run(ctx context.Context) {
 	for _, itemToProcess := range sem.itemsToProcess {
 		semaphoreWG.Add(1)
 		sem.semaphore <- struct{}{}
-		worker := sem.workersPool.Get().(worker)
+		worker := sem.workersPool.Get().(*worker)
 
 		go func(pipe pipeline[T], item T, errChan chan error) {
+			defer semaphoreWG.Done()
+			defer func() {
+				<-sem.semaphore
+			}()
+			defer sem.workersPool.Put(worker)
+
 			ctxWithWorker := context.WithValue(ctx, WorkerIDcontextKey, worker.id)
 			if err := sem.f(item, ctxWithWorker); err != nil {
 				errChan <- err
 			}
 
-			<-sem.semaphore
-			semaphoreWG.Done()
 		}(sem.f, itemToProcess, sem.errorsChannel)
 	}
 
@@ -96,13 +103,15 @@ func (sem *Semaphore[T]) Run(ctx context.Context) {
 	close(sem.errorsChannel)
 }
 
-func (sem *Semaphore[T]) slowlyIncreaseParallelism() bool {
+func (sem *Semaphore[T]) shouldIncreaseAmountOfGoroutinesOverTime() bool {
 	return sem.startingParallelPipelinesAmount > 0 && sem.timeBetweenParallelismIncrease > 0
 }
 
-func (sem *Semaphore[T]) slowlyOpenNewSlotsOnSemahore(ctx context.Context) {
+func (sem *Semaphore[T]) allowANewGoroutineOverTime(ctx context.Context) {
 	ticker := time.NewTicker(sem.timeBetweenParallelismIncrease)
 	defer ticker.Stop()
+
+	sem.currentParallelPipelinesAmount = sem.startingParallelPipelinesAmount
 
 	for {
 		select {
@@ -141,16 +150,16 @@ func WithItensToProcess[T any](itemsToProcess []T) func(*Semaphore[T]) *Semaphor
 // WithStartingParallelPipelinesAmount allows the change of the semaphore attribute startingParallelPipelinesAmount
 // which dictates the amount of initial goroutines running simultaneously. The value must be greater than zero and
 // equal or less than maxParallelPipelinesAmount.
-func WithStartingParallelPipelinesAmount[T any](startingParallelPipelinesAmount int) func(*Semaphore[T]) *Semaphore[T] {
+func WithStartingParallelPipelinesAmount[T any](start int) func(*Semaphore[T]) *Semaphore[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.startingParallelPipelinesAmount = startingParallelPipelinesAmount
+		s.startingParallelPipelinesAmount = start
 
 		if s.startingParallelPipelinesAmount > s.maxParallelPipelinesAmount {
 			s.startingParallelPipelinesAmount = s.maxParallelPipelinesAmount
 		}
 
 		if s.startingParallelPipelinesAmount <= 0 {
-			startingParallelPipelinesAmount = defaultParallelismAmount
+			s.startingParallelPipelinesAmount = defaultParallelismAmount
 		}
 
 		return s
@@ -186,6 +195,10 @@ func WithErrorChannel[T any](errorsChannel chan error) func(*Semaphore[T]) *Sema
 func WithTimeBetweenParallelismIncrease[T any](d time.Duration) func(*Semaphore[T]) *Semaphore[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.timeBetweenParallelismIncrease = d
+
+		if s.timeBetweenParallelismIncrease <= 0 {
+			s.timeBetweenParallelismIncrease = 0
+		}
 
 		return s
 	}
