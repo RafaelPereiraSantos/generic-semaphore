@@ -11,7 +11,6 @@ import (
 type (
 	Semaphore[T any] struct {
 		f                               pipeline[T]
-		itemsToProcess                  []T
 		startingParallelPipelinesAmount int
 		timeBetweenParallelismIncrease  time.Duration
 		currentParallelPipelinesAmount  int
@@ -29,7 +28,7 @@ type (
 
 	pipeline[T any] func(T, context.Context) error
 
-	Option[T any] func(*Semaphore[T]) *Semaphore[T]
+	OptionFunc[T any] func(*Semaphore[T]) *Semaphore[T]
 
 	WorkerKey string
 )
@@ -40,7 +39,7 @@ const (
 )
 
 // NewSemaphore returns a new Semaphore properly configured with the given options.
-func NewSemaphore[T any](options []Option[T]) *Semaphore[T] {
+func NewSemaphore[T any](options []OptionFunc[T]) *Semaphore[T] {
 	sem := &Semaphore[T]{
 		workersPool: sync.Pool{
 			New: func() any {
@@ -63,7 +62,7 @@ func NewSemaphore[T any](options []Option[T]) *Semaphore[T] {
 // If the startingParallelPipelinesAmount was greater than zero, the async processing will start with the amount of
 // goroutines equal to the startingParallelPipelinesAmount attribute and slowly increase its capacity up to
 // maxParallelPipelinesAmount, incrementing 1 extra goroutine each timeBetweenParallelismIncrease.
-func (sem *Semaphore[T]) Run(ctx context.Context) {
+func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T) {
 	sem.semaphore = make(chan struct{}, sem.maxParallelPipelinesAmount)
 
 	if sem.shouldIncreaseAmountOfGoroutinesOverTime() {
@@ -79,7 +78,7 @@ func (sem *Semaphore[T]) Run(ctx context.Context) {
 
 	semaphoreWG := sync.WaitGroup{}
 
-	for _, itemToProcess := range sem.itemsToProcess {
+	for _, itemToProcess := range itemsToProcess {
 		semaphoreWG.Add(1)
 		sem.semaphore <- struct{}{}
 		worker := sem.workersPool.Get().(*worker)
@@ -128,20 +127,19 @@ func (sem *Semaphore[T]) allowANewGoroutineOverTime(ctx context.Context) {
 	}
 }
 
-// WithPipeline allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
-// inside the list of itens to process.
-func WithPipeline[T any](f pipeline[T]) func(*Semaphore[T]) *Semaphore[T] {
-	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.f = f
-
-		return s
+// UpdateSettings allows that a already instantiated semaphore to be updated, it accepts any function with the signature
+// of OptionFunc[T].
+func (sem *Semaphore[T]) UpdateSettings(options []OptionFunc[T]) {
+	for _, opts := range options {
+		opts(sem)
 	}
 }
 
-// WithItensToProcess allows the send of a list of T elements to be processed by the semaphore with given function.
-func WithItensToProcess[T any](itemsToProcess []T) func(*Semaphore[T]) *Semaphore[T] {
+// WithPipeline allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
+// inside the list of itens to process.
+func WithPipeline[T any](f pipeline[T]) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.itemsToProcess = itemsToProcess
+		s.f = f
 
 		return s
 	}
@@ -150,7 +148,7 @@ func WithItensToProcess[T any](itemsToProcess []T) func(*Semaphore[T]) *Semaphor
 // WithStartingParallelPipelinesAmount allows the change of the semaphore attribute startingParallelPipelinesAmount
 // which dictates the amount of initial goroutines running simultaneously. The value must be greater than zero and
 // equal or less than maxParallelPipelinesAmount.
-func WithStartingParallelPipelinesAmount[T any](start int) func(*Semaphore[T]) *Semaphore[T] {
+func WithStartingParallelPipelinesAmount[T any](start int) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.startingParallelPipelinesAmount = start
 
@@ -168,7 +166,7 @@ func WithStartingParallelPipelinesAmount[T any](start int) func(*Semaphore[T]) *
 
 // WithMaxParallelPipelinesAmount allows the change of the semaphore attribute maxParallelPipelinesAmount which
 // controls the max amount of goroutine runnining simultaneously. The value must be greater than 0.
-func WithMaxParallelPipelinesAmount[T any](max int) func(*Semaphore[T]) *Semaphore[T] {
+func WithMaxParallelPipelinesAmount[T any](max int) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.maxParallelPipelinesAmount = max
 
@@ -182,7 +180,7 @@ func WithMaxParallelPipelinesAmount[T any](max int) func(*Semaphore[T]) *Semapho
 
 // WithErrorChannel is a function that allows that a channel be passed to the semaphore allowing that the semaphore
 // send errors that happened with the pipeline.
-func WithErrorChannel[T any](errorsChannel chan error) func(*Semaphore[T]) *Semaphore[T] {
+func WithErrorChannel[T any](errorsChannel chan error) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.errorsChannel = errorsChannel
 
@@ -192,7 +190,7 @@ func WithErrorChannel[T any](errorsChannel chan error) func(*Semaphore[T]) *Sema
 
 // WithTimeBetweenParallelismIncrease is a optional function that allows the implementation of a duration time
 // between opening of each new slot for a goroutine to run.
-func WithTimeBetweenParallelismIncrease[T any](d time.Duration) func(*Semaphore[T]) *Semaphore[T] {
+func WithTimeBetweenParallelismIncrease[T any](d time.Duration) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.timeBetweenParallelismIncrease = d
 

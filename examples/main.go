@@ -33,16 +33,15 @@ func main() {
 		"Claudia",
 	}
 
-	sem := gsemaphore.NewSemaphore([]gsemaphore.Option[string]{
+	sem := gsemaphore.NewSemaphore([]gsemaphore.OptionFunc[string]{
 		gsemaphore.WithPipeline(pipeline),
-		gsemaphore.WithItensToProcess(userNames),
 		gsemaphore.WithStartingParallelPipelinesAmount[string](1),
 		gsemaphore.WithTimeBetweenParallelismIncrease[string](1 * time.Second),
 		gsemaphore.WithMaxParallelPipelinesAmount[string](10),
 		gsemaphore.WithErrorChannel[string](errorChannel),
 	})
 
-	go sem.Run(context.Background())
+	go sem.Run(context.Background(), userNames)
 
 	for err := range errorChannel {
 		fmt.Println(err)
