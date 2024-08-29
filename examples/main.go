@@ -38,10 +38,10 @@ func main() {
 		gsemaphore.WithParallelismStrategyOf(
 			gsemaphore.BuildLinearParallelismIncreaseStrategy[string](1, 10, time.Second),
 		),
-		gsemaphore.WithErrorChannel[string](errorChannel),
+		gsemaphore.WithTimeout[string](time.Second),
 	})
 
-	go sem.Run(context.Background(), userNames)
+	go sem.Run(context.Background(), userNames, errorChannel)
 
 	for err := range errorChannel {
 		fmt.Println(err)

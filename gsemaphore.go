@@ -2,6 +2,8 @@ package gsemaphore
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -12,7 +14,7 @@ type (
 	Semaphore[T any] struct {
 		f                               pipeline[T]
 		startingParallelPipelinesAmount int
-		errorsChannel                   chan error
+		timeout                         time.Duration
 
 		semaphore chan struct{}
 
@@ -40,6 +42,10 @@ const (
 	WorkerIDcontextKey       WorkerKey = "swid"
 )
 
+var (
+	ErrSempahoreTimeout = errors.New("semaphore pipeline timeout")
+)
+
 // NewSemaphore returns a new Semaphore properly configured with the given options.
 func NewSemaphore[T any](options []OptionFunc[T]) *Semaphore[T] {
 	sem := &Semaphore[T]{
@@ -64,7 +70,9 @@ func NewSemaphore[T any](options []OptionFunc[T]) *Semaphore[T] {
 // If the startingParallelPipelinesAmount was greater than zero, the async processing will start with the amount of
 // goroutines equal to the startingParallelPipelinesAmount attribute and slowly increase its capacity up to
 // maxParallelPipelinesAmount, incrementing 1 extra goroutine each timeBetweenParallelismIncrease.
-func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T) {
+// If timeout was specified the pipeline has that amount of time to run, otherwise it will receive a termination signal
+// the goroutine will pass to the next item of the list and the errorsChannel will receive a ErrSempahoreTimeout error.
+func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T, errorsChannel chan error) {
 	followUp, followUpCancel := sem.parallelismStrategy(ctx, sem)
 
 	if followUp != nil {
@@ -90,15 +98,40 @@ func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T) {
 			defer sem.workersPool.Put(worker)
 
 			ctxWithWorker := context.WithValue(ctx, WorkerIDcontextKey, worker.id)
-			if err := sem.f(item, ctxWithWorker); err != nil {
-				errChan <- err
+
+			if sem.shouldApplyTimeout() {
+				var cancel context.CancelFunc
+				ctxWithWorker, cancel = context.WithTimeout(ctxWithWorker, sem.timeout)
+				defer cancel()
 			}
 
-		}(sem.f, itemToProcess, sem.errorsChannel)
+			errGorChan := make(chan error)
+			defer close(errGorChan)
+
+			go func() {
+				if err := sem.f(item, ctxWithWorker); err != nil {
+					errGorChan <- err
+				}
+			}()
+
+			workerErr := func() error {
+				return fmt.Errorf("error with worker %s", worker.id)
+			}
+
+			select {
+			case <-ctxWithWorker.Done():
+				errChan <- fmt.Errorf("%w: %w", workerErr(), ErrSempahoreTimeout)
+
+				return
+			case err := <-errGorChan:
+				errChan <- fmt.Errorf("%w: %w", workerErr(), err)
+			}
+
+		}(sem.f, itemToProcess, errorsChannel)
 	}
 
 	semaphoreWG.Wait()
-	close(sem.errorsChannel)
+	close(errorsChannel)
 }
 
 // UpdateSettings allows that a already instantiated semaphore to be updated, it accepts any function with the signature
@@ -107,6 +140,10 @@ func (sem *Semaphore[T]) UpdateSettings(options []OptionFunc[T]) {
 	for _, opts := range options {
 		opts(sem)
 	}
+}
+
+func (sem *Semaphore[T]) shouldApplyTimeout() bool {
+	return sem.timeout > 0
 }
 
 // WithPipeline allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
@@ -119,11 +156,17 @@ func WithPipeline[T any](f pipeline[T]) OptionFunc[T] {
 	}
 }
 
-// WithErrorChannel is a function that allows that a channel be passed to the semaphore allowing that the semaphore
-// send errors that happened with the pipeline.
-func WithErrorChannel[T any](errorsChannel chan error) OptionFunc[T] {
+// WithTimeout allows the specification of a timeout duration that will be used to control for how long a goroutine
+// will wait for the pipeline to run before given up. The same context will be passed forward to the inner piepeline
+// therefore, the pipeline will receive the Done signal and can try to gracefully shutdown.
+// The timeout must be greater than 0.
+func WithTimeout[T any](t time.Duration) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.errorsChannel = errorsChannel
+		s.timeout = t
+
+		if s.timeout < 0 {
+			s.timeout = 0
+		}
 
 		return s
 	}
