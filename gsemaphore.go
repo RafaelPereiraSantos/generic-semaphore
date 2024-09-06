@@ -12,7 +12,7 @@ import (
 
 type (
 	Semaphore[T any] struct {
-		f                               pipeline[T]
+		flow                            pipeline[T]
 		startingParallelPipelinesAmount int
 		timeout                         time.Duration
 
@@ -72,7 +72,7 @@ func NewSemaphore[T any](options []OptionFunc[T]) *Semaphore[T] {
 // maxParallelPipelinesAmount, incrementing 1 extra goroutine each timeBetweenParallelismIncrease.
 // If timeout was specified the pipeline has that amount of time to run, otherwise it will receive a termination signal
 // the goroutine will pass to the next item of the list and the errorsChannel will receive a ErrSempahoreTimeout error.
-func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T, errorsChannel chan error) {
+func (sem *Semaphore[T]) Run(ctx context.Context, source []T, errorsChannel chan error) {
 	followUp, followUpCancel := sem.parallelismStrategy(ctx, sem)
 
 	if followUp != nil {
@@ -85,7 +85,7 @@ func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T, errorsChan
 
 	semaphoreWG := sync.WaitGroup{}
 
-	for _, itemToProcess := range itemsToProcess {
+	for _, itemToProcess := range source {
 		semaphoreWG.Add(1)
 		sem.semaphore <- struct{}{}
 		worker := sem.workersPool.Get().(*worker)
@@ -109,7 +109,7 @@ func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T, errorsChan
 			defer close(errGorChan)
 
 			go func() {
-				if err := sem.f(item, ctxWithWorker); err != nil {
+				if err := sem.flow(item, ctxWithWorker); err != nil {
 					errGorChan <- err
 				}
 			}()
@@ -127,7 +127,7 @@ func (sem *Semaphore[T]) Run(ctx context.Context, itemsToProcess []T, errorsChan
 				errChan <- fmt.Errorf("%w: %w", workerErr(), err)
 			}
 
-		}(sem.f, itemToProcess, errorsChannel)
+		}(sem.flow, itemToProcess, errorsChannel)
 	}
 
 	semaphoreWG.Wait()
@@ -146,11 +146,11 @@ func (sem *Semaphore[T]) shouldApplyTimeout() bool {
 	return sem.timeout > 0
 }
 
-// WithPipeline allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
+// WithFlow allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
 // inside the list of itens to process.
-func WithPipeline[T any](f pipeline[T]) OptionFunc[T] {
+func WithFlow[T any](f pipeline[T]) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.f = f
+		s.flow = f
 
 		return s
 	}

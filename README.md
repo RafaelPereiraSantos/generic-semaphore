@@ -11,11 +11,11 @@ import semaphore "github.com/RafaelPereiraSantos/gsemaphore"
 
 func main() {
   	// Creates a error channel that will be used by the semaphore to
-	// return any errors with the pipeline.
+	  // return any errors with the pipeline.
 	errorChannel := make(chan error)
 
   	// Creates the function that will process each item from a list of itens to
-	// be processed individually per goroutine.
+	  // be processed individually per goroutine.
 	pipeline := func(u string, ctx context.Context) error {
 		workerID := ctx.Value(gsemaphore.WorkerIDcontextKey)
 
@@ -38,14 +38,14 @@ func main() {
 	}
 
   	// Creates the async pipeline passing all the necessary configurations.
-	// Note that if no configuration is given it will the follow its default values
-	// (refers to the internal code to see them).
+	  // Note that if no configuration is given it will the follow its default values
+	  // (refers to the internal code to see them).
 	sem := gsemaphore.NewSemaphore([]gsemaphore.OptionFunc[string]{
-		gsemaphore.WithPipeline(pipeline),
+		gsemaphore.WithFlow(pipeline),
     	// Defines which parallelism strategy the pipeline will follow,
-		// in this case the pipeline will start from 1
+		  // in this case the pipeline will start from 1
     	// goroutine and slowly increase up to 10 with a pace of a increase
-		// of 1 per second.
+		  // of 1 per second.
 		gsemaphore.WithParallelismStrategyOf(
 			gsemaphore.BuildLinearParallelismIncreaseStrategy[string](1, 10, time.Second),
 		),
@@ -53,9 +53,9 @@ func main() {
 	})
 
   	// Runs the semaphore passing the list of itens to be processed.
-	// The context that is passed could be used to end
+	  // The context that is passed could be used to end
   	// all pipelines by calling Done(), note that you must implement
-	// a mechanism inside the function to handle the done
+	  // a mechanism inside the function to handle the done
   	// signal and finish the job.
 	go sem.Run(context.Background(), userNames)
 
