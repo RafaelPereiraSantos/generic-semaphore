@@ -2,7 +2,6 @@ package gsemaphore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -11,8 +10,13 @@ import (
 )
 
 type (
+	pipeline[T any] func(context.Context, T) error
+
+	goroutinesRampUpStrategy[T any] func(context.Context, *Semaphore[T]) (strategyFollowUp, context.CancelFunc)
+
 	Semaphore[T any] struct {
-		flow                            pipeline[T]
+		flow pipeline[T]
+
 		startingParallelPipelinesAmount int
 		timeout                         time.Duration
 
@@ -23,27 +27,7 @@ type (
 		parallelismStrategy goroutinesRampUpStrategy[T]
 	}
 
-	worker struct {
-		id string
-	}
-
-	pipeline[T any] func(T, context.Context) error
-
 	OptionFunc[T any] func(*Semaphore[T]) *Semaphore[T]
-
-	WorkerKey string
-
-	goroutinesRampUpStrategy[T any] func(context.Context, *Semaphore[T]) (strategyFollowUp, context.CancelFunc)
-	strategyFollowUp                func()
-)
-
-const (
-	defaultParallelismAmount           = 1
-	WorkerIDcontextKey       WorkerKey = "swid"
-)
-
-var (
-	ErrSempahoreTimeout = errors.New("semaphore pipeline timeout")
 )
 
 // NewSemaphore returns a new Semaphore properly configured with the given options.
@@ -73,6 +57,10 @@ func NewSemaphore[T any](options []OptionFunc[T]) *Semaphore[T] {
 // If timeout was specified the pipeline has that amount of time to run, otherwise it will receive a termination signal
 // the goroutine will pass to the next item of the list and the errorsChannel will receive a ErrSempahoreTimeout error.
 func (sem *Semaphore[T]) Run(ctx context.Context, source []T, errorsChannel chan error) {
+	if sem.parallelismStrategy == nil {
+		sem.parallelismStrategy = BuildFullCapacityFromStartStrategy[T](defaultParallelismAmount)
+	}
+
 	followUp, followUpCancel := sem.parallelismStrategy(ctx, sem)
 
 	if followUp != nil {
@@ -88,57 +76,53 @@ func (sem *Semaphore[T]) Run(ctx context.Context, source []T, errorsChannel chan
 	for _, itemToProcess := range source {
 		semaphoreWG.Add(1)
 		sem.semaphore <- struct{}{}
-		worker := sem.workersPool.Get().(*worker)
 
-		go func(pipe pipeline[T], item T, errChan chan error) {
-			defer semaphoreWG.Done()
-			defer func() {
-				<-sem.semaphore
-			}()
-			defer sem.workersPool.Put(worker)
-
-			ctxWithWorker := context.WithValue(ctx, WorkerIDcontextKey, worker.id)
-
-			if sem.shouldApplyTimeout() {
-				var cancel context.CancelFunc
-				ctxWithWorker, cancel = context.WithTimeout(ctxWithWorker, sem.timeout)
-				defer cancel()
-			}
-
-			errGorChan := make(chan error)
-			defer close(errGorChan)
-
-			go func() {
-				if err := sem.flow(item, ctxWithWorker); err != nil {
-					errGorChan <- err
-				}
-			}()
-
-			workerErr := func() error {
-				return fmt.Errorf("error with worker %s", worker.id)
-			}
-
-			select {
-			case <-ctxWithWorker.Done():
-				errChan <- fmt.Errorf("%w: %w", workerErr(), ErrSempahoreTimeout)
-
-				return
-			case err := <-errGorChan:
-				errChan <- fmt.Errorf("%w: %w", workerErr(), err)
-			}
-
-		}(sem.flow, itemToProcess, errorsChannel)
+		go sem.runWorker(ctx, &semaphoreWG, itemToProcess, errorsChannel)
 	}
 
 	semaphoreWG.Wait()
 	close(errorsChannel)
 }
 
-// UpdateSettings allows that a already instantiated semaphore to be updated, it accepts any function with the signature
-// of OptionFunc[T].
-func (sem *Semaphore[T]) UpdateSettings(options []OptionFunc[T]) {
-	for _, opts := range options {
-		opts(sem)
+// runWorker receives one item at a time and process it forwarding any error returned by the flow to the specified
+// channel.
+func (sem *Semaphore[T]) runWorker(ctx context.Context, semaphoreWG *sync.WaitGroup, item T, errChan chan error) {
+	worker := sem.workersPool.Get().(*worker)
+
+	defer semaphoreWG.Done()
+	defer func() {
+		<-sem.semaphore
+	}()
+	defer sem.workersPool.Put(worker)
+
+	ctxWithWorker := context.WithValue(ctx, WorkerIDcontextKey, worker.id)
+
+	if sem.shouldApplyTimeout() {
+		var cancel context.CancelFunc
+		ctxWithWorker, cancel = context.WithTimeout(ctxWithWorker, sem.timeout)
+		defer cancel()
+	}
+
+	errGorChan := make(chan error)
+	defer close(errGorChan)
+
+	go func() {
+		if err := sem.flow(ctxWithWorker, item); err != nil {
+			errGorChan <- err
+		}
+	}()
+
+	workerErr := func() error {
+		return fmt.Errorf("error with worker %s", worker.id)
+	}
+
+	select {
+	case <-ctxWithWorker.Done():
+		errChan <- fmt.Errorf("%w: %w", workerErr(), ErrSempahoreTimeout)
+
+		return
+	case err := <-errGorChan:
+		errChan <- fmt.Errorf("%w: %w", workerErr(), err)
 	}
 }
 
@@ -146,43 +130,11 @@ func (sem *Semaphore[T]) shouldApplyTimeout() bool {
 	return sem.timeout > 0
 }
 
-// WithFlow allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
-// inside the list of itens to process.
-func WithFlow[T any](f pipeline[T]) OptionFunc[T] {
-	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.flow = f
-
-		return s
-	}
-}
-
-// WithTimeout allows the specification of a timeout duration that will be used to control for how long a goroutine
-// will wait for the pipeline to run before given up. The same context will be passed forward to the inner piepeline
-// therefore, the pipeline will receive the Done signal and can try to gracefully shutdown.
-// The timeout must be greater than 0.
-func WithTimeout[T any](t time.Duration) OptionFunc[T] {
-	return func(s *Semaphore[T]) *Semaphore[T] {
-		s.timeout = t
-
-		if s.timeout < 0 {
-			s.timeout = 0
-		}
-
-		return s
-	}
-}
-
-// WithParallelismStrategyOf allows that the number of goroutines running at same time be defined following any strategy
-// from maxing out from the very beginning with all goroutines running or a slow increase over time.
-func WithParallelismStrategyOf[T any](str goroutinesRampUpStrategy[T]) OptionFunc[T] {
-	return func(s *Semaphore[T]) *Semaphore[T] {
-		if str == nil {
-			return s
-		}
-
-		s.parallelismStrategy = str
-
-		return s
+// UpdateSettings allows that a already instantiated semaphore to be updated, it accepts any function with the signature
+// of OptionFunc[T].
+func (sem *Semaphore[T]) UpdateSettings(options []OptionFunc[T]) {
+	for _, opts := range options {
+		opts(sem)
 	}
 }
 

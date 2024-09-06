@@ -12,7 +12,7 @@ import (
 func main() {
 	errorChannel := make(chan error)
 
-	pipeline := func(u string, ctx context.Context) error {
+	pipeline := func(ctx context.Context, u string) error {
 		workerID := ctx.Value(gsemaphore.WorkerIDcontextKey)
 
 		fmt.Printf("worker: [%s] starting to process user: [%s]\n", workerID, u)
