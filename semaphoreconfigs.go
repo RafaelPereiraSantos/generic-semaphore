@@ -6,7 +6,7 @@ import (
 
 // WithFlow allows a pipeline to be passed to the semaphore that will be in charge of precessing each T element
 // inside the list of itens to process.
-func WithFlow[T any](f pipeline[T]) OptionFunc[T] {
+func WithFlow[T any](f flowFunc[T]) OptionFunc[T] {
 	return func(s *Semaphore[T]) *Semaphore[T] {
 		s.flow = f
 

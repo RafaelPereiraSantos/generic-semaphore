@@ -10,7 +10,7 @@ import (
 )
 
 type (
-	pipelineWithOutput[T any, E any] func(context.Context, T) (E, error)
+	flowStreamFunc[T any, E any] func(context.Context, T) (E, error)
 
 	SemaphoreStream[T any, E any] struct {
 		timeout time.Duration
@@ -48,7 +48,7 @@ func NewSemaphoreStream[T any, E any](options []OptionStreamFunc[T, E]) *Semapho
 
 func (sem *SemaphoreStream[T, E]) RunWithDestination(
 	ctx context.Context,
-	flow pipelineWithOutput[T, E],
+	flow flowStreamFunc[T, E],
 	errorsChannel chan error,
 ) {
 	if sem.amountOfWorkers <= 0 {
@@ -56,7 +56,6 @@ func (sem *SemaphoreStream[T, E]) RunWithDestination(
 	}
 
 	sem.semaphore = make(chan struct{}, sem.amountOfWorkers)
-
 	semaphoreWG := sync.WaitGroup{}
 
 	for {
@@ -66,10 +65,10 @@ func (sem *SemaphoreStream[T, E]) RunWithDestination(
 
 			return
 		case sem.semaphore <- struct{}{}:
-			itemToProcess := <-sem.source
+			item := <-sem.source
 			semaphoreWG.Add(1)
 
-			go sem.runWorker(ctx, &semaphoreWG, flow, itemToProcess, errorsChannel)
+			go sem.runWorker(ctx, &semaphoreWG, flow, item, errorsChannel)
 		}
 	}
 }
@@ -91,7 +90,7 @@ func (sem *SemaphoreStream[T, E]) UpdateSettings(options []OptionStreamFunc[T, E
 func (sem *SemaphoreStream[T, E]) runWorker(
 	ctx context.Context,
 	semaphoreWG *sync.WaitGroup,
-	flow pipelineWithOutput[T, E],
+	flow flowStreamFunc[T, E],
 	item T,
 	errChan chan error,
 ) {
@@ -114,6 +113,9 @@ func (sem *SemaphoreStream[T, E]) runWorker(
 	errGorChan := make(chan error)
 	defer close(errGorChan)
 
+	arrivelMutex := sync.RWMutex{}
+	lateArrivel := false
+
 	go func() {
 		output, err := flow(ctxWithWorker, item)
 		if err != nil {
@@ -122,9 +124,11 @@ func (sem *SemaphoreStream[T, E]) runWorker(
 			return
 		}
 
-		if sem.destination != nil {
+		arrivelMutex.Lock()
+		if sem.destination != nil && !(lateArrivel && sem.blockLateDelivery()) {
 			sem.destination <- output
 		}
+		arrivelMutex.Unlock()
 	}()
 
 	workerErr := func() error {
@@ -135,8 +139,16 @@ func (sem *SemaphoreStream[T, E]) runWorker(
 	case <-ctxWithWorker.Done():
 		errChan <- fmt.Errorf("%w: %w", workerErr(), ErrSempahoreTimeout)
 
+		arrivelMutex.RLock()
+		lateArrivel = true
+		arrivelMutex.RUnlock()
+
 		return
 	case err := <-errGorChan:
 		errChan <- fmt.Errorf("%w: %w", workerErr(), err)
 	}
+}
+
+func (sem *SemaphoreStream[T, E]) blockLateDelivery() bool {
+	return sem.timeout > 0
 }

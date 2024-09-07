@@ -10,12 +10,12 @@ import (
 )
 
 type (
-	pipeline[T any] func(context.Context, T) error
+	flowFunc[T any] func(context.Context, T) error
 
 	goroutinesRampUpStrategy[T any] func(context.Context, *Semaphore[T]) (strategyFollowUp, context.CancelFunc)
 
 	Semaphore[T any] struct {
-		flow pipeline[T]
+		flow flowFunc[T]
 
 		startingParallelPipelinesAmount int
 		timeout                         time.Duration
