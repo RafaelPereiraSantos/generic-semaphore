@@ -12,7 +12,7 @@ import (
 func main() {
 	errorChannel := make(chan error)
 
-	pipeline := func(u string, ctx context.Context) error {
+	pipeline := func(ctx context.Context, u string) error {
 		workerID := ctx.Value(gsemaphore.WorkerIDcontextKey)
 
 		fmt.Printf("worker: [%s] starting to process user: [%s]\n", workerID, u)
@@ -34,7 +34,7 @@ func main() {
 	}
 
 	sem := gsemaphore.NewSemaphore([]gsemaphore.OptionFunc[string]{
-		gsemaphore.WithPipeline(pipeline),
+		gsemaphore.WithFlow(pipeline),
 		gsemaphore.WithParallelismStrategyOf(
 			gsemaphore.BuildLinearParallelismIncreaseStrategy[string](1, 10, time.Second),
 		),
